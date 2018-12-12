@@ -46,7 +46,7 @@ class UDPSocketClient:
        return self.mData
 
 class RealTimeThread(threading.Thread):  
-    def __init__(self, axes, canvas, cha,  timeout, stopforExternalTrigger):  
+    def __init__(self, axes, canvas, cha,  timeout, externalTrigger):  
         super(RealTimeThread, self).__init__()  
         self.axes = axes
         self.canvas = canvas
@@ -56,11 +56,15 @@ class RealTimeThread(threading.Thread):
         self.data_ChA = []
         self.data_ChB = []
         self.stopped = False
-        self.stopforExternalTrigger = stopforExternalTrigger
+        self.externalTrigger = externalTrigger
         self.sampleRate = mainWindow.getSampleRate()
         self.recordLength = mainWindow.getRecordLength()
         self.volScale = mainWindow.getVoltageScale()
-        self.offset = mainWindow.getOffset()     
+        self.offset = mainWindow.getOffset()  
+     
+        # Init the member x
+        self.timespan = self.recordLength*1024/self.sampleRate # in us
+        self.x = np.linspace(0, self.timespan, self.recordLength*1024)  
 
     def run(self):  
         def bumatoyuanmaSingle(x):
@@ -69,6 +73,8 @@ class RealTimeThread(threading.Thread):
           return x
    
         def parseData(data, length,  withHead):
+            
+#            tStart1 = time.time()
             data_ChA =[]
             data_ChB = []
             newdata = data
@@ -77,7 +83,6 @@ class RealTimeThread(threading.Thread):
                #newdata = data # just for testing
             else:
                 newdata = data
-                
             for pos in range(0, length*1024, 32):
                 line = newdata[pos:pos+32]
                 newline = ''
@@ -89,83 +94,115 @@ class RealTimeThread(threading.Thread):
                     except:
                         #print ("Data Invalid...")
                         newline =  newline + "0000"
+                        print ("Newline + 0000")
 
                 # Get CHA/CHB VALUE BY ABAB...
                 for i in range(0,  64,  8):
-                    dataA1= newline[i:i+2]
-                    dataA2= newline[i+2:i+4]
-                    dataA = dataA2 + dataA1
-                    dataA = int (dataA,  16)
+#                    dataA1= newline[i:i+2]
+#                    dataA2= newline[i+2:i+4]
+                    dataA = int(newline[i+2:i+4] + newline[i:i+2],  16)
+#                    dataA = int (dataA,  16)
                     data_ChA.append(bumatoyuanmaSingle(dataA))
-                    dataB1 = newline[i+4:i+6]
-                    dataB2 = newline[i+6:i+8]
-                    dataB = dataB2  + dataB1
-                    dataB = int (dataB,  16)
+#                    dataB1 = newline[i+4:i+6]
+#                    dataB2 = newline[i+6:i+8]
+#                    dataB = dataB2  + dataB1
+                    dataB = int(newline[i+6:i+8]  + newline[i+4:i+6], 16)
+#                    dataB = int (dataB,  16)
                     data_ChB.append(bumatoyuanmaSingle(dataB))
-
-            #print ("Channel A: Length:", len(data_ChA))
-            #print ("Channel B: Length:", len(data_ChB))
+            
+#            tEnd1 = time.time()
+#            print ("tEnd1 - tStart1:",  tEnd1 - tStart1)
             
             return [data_ChA, data_ChB]
 
-        def receiveData():
-#            mainWindow.sendCmdWRREG(0x2, 0x28)
-#            mainWindow.sendCmdWRREG(0x2, 0x29)
-#            time.sleep(1)
-#            mainWindow.sendCmdWRREG(0x2, 0x2b)
-            mainWindow.sendCmdRAW_AD_SAMPLE(self.recordLength * 4)
-            mainWindow.receiveCmdRAW_AD_SAMPLE(self.recordLength * 4)
-            return mainWindow.udpSocketClient.mData
-                    
         def realtimecapture():
-            print ("Start Real Time Capture.......")
+            if (self.externalTrigger == True):
+                print ("Start External Trigger Thread.......")
+            else:
+                print ("Start Auto Trigger Thread.......")
             
-            frameMode = mainWindow.checkBox_FrameMode.isChecked()
-
-
-# Replace it in the start command
-#            mainWindow.sendCmdWRREG(0x2, 0x28)
-#            mainWindow.sendCmdWRREG(0x2, 0x29)
-#            time.sleep(1)
-
-            # Start to read data
-            mainWindow.sendCmdWRREG(0x2, 0x2b)
-
+            frameMode = mainWindow.checkBox_FrameMode.isChecked() 
+            triggerType = mainWindow.getTriggerType()
+            if (triggerType == 0): # Auto
+                frameMode = False
+                
+            mainWindow.lcdNumber_FrameNum.display(1)
             if (frameMode == False):
+                self.data_ChA = []
+                self.data_ChB = []
                 receiveTimes = int (self.recordLength*mainWindow.getFrameNumber() / 8)
                 while not self.stopped:
-                    self.data_ChA = []
-                    self.data_ChB = []
-                    if receiveTimes <= 1:
-                        data = receiveData()
-                        #print ("Receive Total Length:",  len(data))
-                        if data:
-                            data = parseData(data, self.recordLength * 4 ,  True )
-                            self.data_ChA = data[0]
-                            self.data_ChB = data[1]
+                    # Write register
+                    if (self.externalTrigger):
+                        mainWindow.sendCmdWRREG(0x2, 0x2c) # Reset
+                        mainWindow.sendCmdWRREG(0x2, 0x2d) # Start to capture
+                        #mainWindow.sendCmdWRREG(0x2, 0x2f) # Start to read
                     else:
-                        for loop in range(0, receiveTimes):
-                            data = receiveData()
-                            if data:
-                                data = parseData(data, 32,  True )
-                                self.data_ChA = self.data_ChA + data[0]
-                                self.data_ChB = self.data_ChB + data[1]
-                            
-                    if (mainWindow.radioButton_CHA.isChecked()): 
-                        on_draw(self.axes, self.canvas, self.data_ChA)
-                    else: 
-                        on_draw(self.axes, self.canvas, self.data_ChB)
-                
-                    if self.stopforExternalTrigger == True:
-                        self.stop()
-    #                    mainWindow.externalTriggerThread.stop()
-    #                    mainWindow.on_pushButton_Stop_TimeDomain_clicked()
+                        mainWindow.sendCmdWRREG(0x2, 0x28) # Reset
+                        mainWindow.sendCmdWRREG(0x2, 0x29) # Start to capture
+                        #mainWindow.sendCmdWRREG(0x2, 0x2b) # Start to read
                     
+                    # Check the read data length is ready or not
+                    while (not self.stopped):
+                        
+                        # Capture only 1 time to test
+                        #self.stop()
+                        
+                        currentDataLength = mainWindow.readDataCount()
+                        print ("Current Data Length:",  currentDataLength)
+                        # Read Data
+                        # FrameNum*RecordLength*1024
+                        expectLength = mainWindow.getRecordLength() *1024*mainWindow.getFrameNumber()
+                        if (expectLength <= currentDataLength):
+                            if (self.externalTrigger):
+                                mainWindow.sendCmdWRREG(0x2, 0x2f) # Start to read
+                            else:
+                                mainWindow.sendCmdWRREG(0x2, 0x2b) # Start to read
+                                
+                            self.data_ChA = []
+                            self.data_ChB = []
+                            if receiveTimes <= 1:
+                                mainWindow.sendCmdRAW_AD_SAMPLE(self.recordLength * 4)
+                                mainWindow.receiveCmdRAW_AD_SAMPLE(self.recordLength * 4)
+                                data = mainWindow.udpSocketClient.mData
+                                #print ("Receive Total Length:",  len(data))
+                                if data:
+                                    data = parseData(data, self.recordLength * 4 ,  True )
+                                    self.data_ChA = data[0]
+                                    self.data_ChB = data[1]
+                            else:
+                                for loop in range(0, receiveTimes):
+                                    if (not self.stopped):
+                                        mainWindow.sendCmdRAW_AD_SAMPLE(32)
+                                        mainWindow.receiveCmdRAW_AD_SAMPLE(32)
+                                        data = mainWindow.udpSocketClient.mData
+                                        if data:
+                                            data = parseData(data, 32,  True )
+                                            self.data_ChA = self.data_ChA + data[0]
+                                            self.data_ChB = self.data_ChB + data[1]
+                            #t1 = time.time()
+                            if (mainWindow.radioButton_CHA.isChecked()): 
+                                on_draw(self.axes, self.canvas, self.data_ChA)
+                            else: 
+                                on_draw(self.axes, self.canvas, self.data_ChB)
+                            #t2 = time.time()
+                            #print ("t2 - t1:",  t2 - t1)
+                            # Draw finised, break
+                            break
+                        else:
+                            pass
+          
+#                    if self.externalTrigger == True:
+#                        self.stop()
+
                 if self.stopped:
                     mainWindow.lastChAData = []
                     mainWindow.lastChAData.append(self.data_ChA )
                     mainWindow.lastChBData = []
                     mainWindow.lastChBData.append(self.data_ChB)
+                    
+                    # Save the last data
+                    mainWindow.on_pushButton_Save_TimeDomain_clicked() 
                     
             elif (frameMode == True):
                 receiveTimes = int (self.recordLength / 8)
@@ -174,40 +211,95 @@ class RealTimeThread(threading.Thread):
                 data_ChB_List = []
                 
                 while not self.stopped:
-                    for frameIndex in range(0,  frameNum):
-                        self.data_ChA = []
-                        self.data_ChB = []
-                        if receiveTimes <= 1:
-                            data = receiveData()
-                            #print ("Receive Total Length:",  len(data))
-                            if data:
-                                data = parseData(data, self.recordLength * 4 ,  True )
-                                self.data_ChA = data[0]
-                                self.data_ChB = data[1]
-                                data_ChA_List.append(self.data_ChA)
-                                data_ChB_List.append(self.data_ChB)
-                        else:
-                            for loop in range(0, receiveTimes):
-                                data = receiveData()
-                                if data:
-                                    data = parseData(data, 32,  True )
-                                    self.data_ChA = self.data_ChA + data[0]
-                                    self.data_ChB = self.data_ChB + data[1]
-                            
-                            data_ChA_List.append(self.data_ChA)
-                            data_ChB_List.append(self.data_ChB)
-                            
-                        if (mainWindow.radioButton_CHA.isChecked()): 
-                            on_draw(self.axes, self.canvas, self.data_ChA)
-                        else: 
-                            on_draw(self.axes, self.canvas, self.data_ChB)
+                     # Write register
+                    if (self.externalTrigger):
+                        mainWindow.sendCmdWRREG(0x2, 0x2c) # Reset
+                        mainWindow.sendCmdWRREG(0x2, 0x2d) # Start to capture
+                        #mainWindow.sendCmdWRREG(0x2, 0x2f) # Start to read
+                    else:
+                        mainWindow.sendCmdWRREG(0x2, 0x28) # Reset
+                        mainWindow.sendCmdWRREG(0x2, 0x29) # Start to capture
+                        #mainWindow.sendCmdWRREG(0x2, 0x2b) # Start to read
+ 
+                    while (not self.stopped):
+                        currentDataLength = mainWindow.readDataCount()
+                        #print ("Current Data Length:",  currentDataLength)
+                        # Read Data
+                        # FrameNum*RecordLength*1024
+                        expectLength = mainWindow.getRecordLength() *1024*mainWindow.getFrameNumber()
+                        if (expectLength <= currentDataLength):
+                            if (self.externalTrigger):
+                                mainWindow.sendCmdWRREG(0x2, 0x2f) # Start to read
+                            else:
+                                mainWindow.sendCmdWRREG(0x2, 0x2b) # Start to read
 
-                    if self.stopforExternalTrigger == True:
+                            self.data_ChA = []
+                            self.data_ChB = []
+                            data_ChA_List = []
+                            data_ChB_List = []
+                            #t1 = time.time()
+                            for frameIndex in range(1,  frameNum + 1):
+                                if (not self.stopped):
+                                    self.data_ChA = []
+                                    self.data_ChB = []
+                                    mainWindow.lcdNumber_FrameNum.display(frameIndex)
+                                    #print ("Frame Number:",  frameIndex)
+                                    if receiveTimes <= 1:
+                                      mainWindow.sendCmdRAW_AD_SAMPLE(self.recordLength * 4)
+                                      mainWindow.receiveCmdRAW_AD_SAMPLE(self.recordLength * 4)
+                                      data = mainWindow.udpSocketClient.mData
+                                      #print ("Receive Total Length:",  len(data))
+                                      if data:
+                                           data = parseData(data, self.recordLength * 4 ,  True )
+                                           self.data_ChA = data[0]
+                                           self.data_ChB = data[1]
+                                           data_ChA_List.append(self.data_ChA)
+                                           data_ChB_List.append(self.data_ChB)
+                                    else:
+                                        self.data_ChA = []
+                                        self.data_ChB = []
+                                        for loop in range(0, receiveTimes):
+                                            mainWindow.sendCmdRAW_AD_SAMPLE(32)
+                                            mainWindow.receiveCmdRAW_AD_SAMPLE(32)
+                                            data = mainWindow.udpSocketClient.mData
+                                            if data:
+                                               data = parseData(data, 32,  True )
+                                               self.data_ChA = self.data_ChA + data[0]
+                                               self.data_ChB = self.data_ChB + data[1]
+                                        data_ChA_List.append(self.data_ChA)
+                                        data_ChB_List.append(self.data_ChB)
+                                    #t1 = time.time()
+                                    # Only do for the last frameIndex
+                                    if frameNum > 5:
+                                        if frameIndex == 1 or frameIndex == frameNum:
+                                            if (mainWindow.radioButton_CHA.isChecked()): 
+                                               on_draw(self.axes, self.canvas, self.data_ChA)
+                                            else: 
+                                               on_draw(self.axes, self.canvas, self.data_ChB)
+                                    else:
+                                        if (mainWindow.radioButton_CHA.isChecked()): 
+                                            on_draw(self.axes, self.canvas, self.data_ChA)
+                                        else: 
+                                           on_draw(self.axes, self.canvas, self.data_ChB)
+                                #t2 = time.time()
+                                #print ("t2 - t1:",  t2 - t1) 
+                            #t2 = time.time()
+                            #print ("t2 - t1:",  t2 - t1)     
+                            # Draw finised, break
+                            break
+                        else:
+                            time.sleep(0.1) # Sleep for a while to wait the expectLength
+          
+                    if self.externalTrigger == True:
                         self.stop()
+                        mainWindow.on_pushButton_Stop_TimeDomain_clicked()
   
                 if self.stopped:
                     mainWindow.lastChAData = data_ChA_List 
-                    mainWindow.lastChBData = data_ChB_List  
+                    mainWindow.lastChBData = data_ChB_List 
+                    # Save them automatically if all the data is caputred
+                    if (mainWindow.lcdNumber_FrameNum.intValue() == mainWindow.getFrameNumber()):
+                        mainWindow.on_pushButton_Save_TimeDomain_clicked() 
   
         def on_draw( axes, canvas, data):
                 # clear the axes and redraw the plot anew
@@ -216,12 +308,12 @@ class RealTimeThread(threading.Thread):
                 axes.set_xlabel('Time(μs)')
                 axes.set_ylabel('Voltage')
                 
-                self.sampleRate = mainWindow.getSampleRate()
+#                self.sampleRate = mainWindow.getSampleRate()
                 #self.recordLength = mainWindow.getRecordLength()
                 self.volScale = mainWindow.getVoltageScale()
                 self.offset = mainWindow.getOffset()
-                timespan = self.recordLength*1024/self.sampleRate # in us
-                x = np.linspace(0, timespan, self.recordLength*1024)  
+#                timespan = self.recordLength*1024/self.sampleRate # in us
+#                x = np.linspace(0, timespan, self.recordLength*1024)  
                 #x = np.linspace(-self.sampleRate*1e6/2, self.sampleRate*1e6/2, self.recordLength*1024)  
                 normalLimY = self.volScale * 10;
                 axes.set_ylim(-normalLimY/2 + self.offset, normalLimY/2 + self.offset )
@@ -231,19 +323,28 @@ class RealTimeThread(threading.Thread):
                 axes.yaxis.set_minor_locator(yminorLocator)
                 axes.grid(True)
                 
-                #print ("Plot X Length: ",  self.recordLength*1024)
-                #print ("Plot Data Length: ",  len(data))
-                axes.plot(x, data)
+#                # Init 0 for draw...
+#                plt.rcParams['agg.path.chunksize'] = 0
+#                matplotlib.rcParams['agg.path.chunksize'] = 0
+#                matplotlib.rcParams.update( matplotlib.rc_params() )
+                
+                axes.plot(self.x, data)
                 canvas.draw()
 
-        now = datetime.datetime.now()
-        startTime = now.strftime('%Y-%m-%d-%H-%M-%S')
+#                t2 = time.time()
+#                print ("draw Time: ",  t2-t1)
+#        now = datetime.datetime.now()
+#        startTime = now.strftime('%Y-%m-%d-%H-%M-%S')
         subthread = threading.Thread(target=realtimecapture)
         subthread.setDaemon(True)  
         subthread.start()  
         
     def stop(self): 
-        print ("Stop Real Time Thread...")
+        if (self.externalTrigger == True):
+            print ("Stop External Trigger Thread.......")
+        else:
+            print ("Stop Auto Trigger Thread.......")
+            
         self.stopped = True  
 
     def isStopped(self):  
@@ -259,31 +360,28 @@ class ExternalTriggerThread(threading.Thread):
     def run(self):      
         def triggerMonitor():
             print ("Start External Trigger Thread.......")
-            while not self.stopped:
-                
-                    
-                # Read register....
-                mainWindow.sendCmdWRREG(0x2, 0x28)
-                mainWindow.sendCmdWRREG(0x2, 0x29)
-                time.sleep(1)
         
-                currentDataLength = mainWindow.readExternalTriggerDataCount()
-                print ("Current Data Length:",  currentDataLength)
+            while (not self.stopped):
+                currentDataLength = mainWindow.readDataCount()
+                #print ("Current Data Length:",  currentDataLength)
                 
                 #currentDataLength = mainWindow.getRecordLength() *1024*mainWindow.getFrameNumber()
                 # Read Data
                 # FrameNum*RecordLength*1024
-                if (mainWindow.getRecordLength() *1024*mainWindow.getFrameNumber() <= currentDataLength):
+                expectNum = mainWindow.getRecordLength() *1024*mainWindow.getFrameNumber()
+                if (expectNum <= currentDataLength):
                     # start RealTimeThread
                     self.internalRealTimeThread = RealTimeThread(mainWindow.axes, mainWindow.canvas, mainWindow.radioButton_CHA.isChecked(), 1.0,  True)
                     self.internalRealTimeThread.setDaemon(True)
                     self.internalRealTimeThread.start()
                     #times = 1
                     while (not self.internalRealTimeThread.isStopped()):
-                        time.sleep(0.5)
+                        time.sleep(0.1)
+                    # Break this time
+                    break;
                 
                 # Wait for 500ms
-                time.sleep(0.5)
+                time.sleep(0.1)
 
         subthread = threading.Thread(target=triggerMonitor)
         subthread.setDaemon(True)  
@@ -301,6 +399,11 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         super(MainWindow, self).__init__(parent)
         self.setupUi(self)
 
+        # Init 0 for draw...
+        plt.rcParams['agg.path.chunksize'] = 0
+        matplotlib.rcParams['agg.path.chunksize'] = 0
+        matplotlib.rcParams.update( matplotlib.rc_params() )
+        
         self.dpi = 100
         self.signalframe = self.widget_Signal_TimeDomain
         self.figure = Figure((11.3, 6.3), dpi=self.dpi)
@@ -340,20 +443,36 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         # Init Socket
         self.udpSocketClient = UDPSocketClient()
         
-        # Init Length
-        self.sendCmdRecordLength(1)
+        # Init FrameNum
+        self.checkBox_FrameMode.setEnabled(True)
+        self.frameNum = self.getFrameNumber()
+        # 0x4
+        self.sendCmdFramNum(self.frameNum)
         
-        self.sendCmdWRREG(0x2,  0x20)
-        self.sendCmdWRREG(0x2,  0x28)
+        # Init Length 0x8
+        self.comboBox_RecordLength.setCurrentIndex(6) # 64k
+        # Set RecordLength 
+        self.sendCmdRecordLength(self.getRecordLength() * self.getFrameNumber())
+        
+        #Init Trigger 0x2, bit2
+        self.comboBox_TriggerDomain.setCurrentIndex(1) # External
+        self.sendCmdTriggerType(self.getTriggerType())
+        
+        # Reset PFGA to read to capture data
+        if (self.getTriggerType() == 0):
+            self.sendCmdWRREG(0x2,  0x20)
+            self.sendCmdWRREG(0x2,  0x28)
+        else:
+            self.sendCmdWRREG(0xa,  0x0)
+            self.sendCmdWRREG(0x2,  0x2c)
+            self.sendCmdWRREG(0x2,  0x2d)
         
         # Read sampleRate
         value = self.readCmdSampleRate()
         if value > 5:
             value = 0
         self.comboBox_SampleRate.setCurrentIndex(value)
-        
-        self.frameNum = self.getFrameNumber()
-        
+
         # The last data
         self.lastChAData = []
         self.lastChBData = []
@@ -394,41 +513,40 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
           self.udpSocketClient.sendData()
        
     def sendCmdTriggerType(self,  value): 
-        value = value << 2
-        regAddr= 0x2 # 0x2, Bit[2], 0: Auot, 1: External
-        regValue=value
+        regAddr= 0x2 # 0x2, Bit[2], 0: Auto, 1: External
         currentValue = self.readCmdTriggerType()
-        
-        currentValue = currentValue | value
+        if value == 0: # Auto Trigger
+            mask = 0b1111111111111011
+            currentValue = currentValue & mask
+        elif value == 1: # External
+            mask = 0b100
+            currentValue = currentValue | mask
+            
         self.sendCmdWRREG(regAddr,  currentValue)
-
-#    def receiveCmdTriggerType(self): 
-#        global gSocketBodySize
-#        gSocketBodySize = 8
-#        self.udpSocketClient.setBufSize(gSocketBodySize + gSocketHeaderSize)
-#        mainWindow.udpSocketClient.receiveData() # Do nothing
     
     def readCmdTriggerType(self): 
         print ("readCmdTriggerType ")
         self.sendCmdRDREG(0x02,  0x00)
         data = self.udpSocketClient.receiveData()
-        value = int(struct.unpack('L',data[20:24])[0])
+        value = ntohl(int(struct.unpack('L',data[20:24])[0]))
         return value
         
-    def readExternalTriggerDataCount(self): 
+    def readDataCount(self): 
         self.sendCmdRDREG(0x10,  0x00)
         data = self.udpSocketClient.receiveData()
         data = data[20:24]
         lowValue = ntohl(int(struct.unpack('L',data)[0]))
-        #print (hex(lowValue))
+        print ("0x10 Value:",  hex(lowValue))
         self.sendCmdRDREG(0x12,  0x00)
         data = self.udpSocketClient.receiveData()
         data = data[20:24]
         highValue =ntohl(int(struct.unpack('L',data)[0]))
-        #print (hex(highValue))
+        print ("0x12 Value:",  hex(highValue))
         value = highValue << 16 | lowValue
         return value
         #return 1024
+    
+    
     
     def sendCmdSampleRate(self, value): 
         global gSocketBodySize
@@ -436,7 +554,7 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self.udpSocketClient.setBufSize(gSocketBodySize + gSocketHeaderSize)
         cmdData  =  struct.pack('L', htonl(value)) 
         self.sendcommand(0x5a09,0x0000,0x5a09,0x0004,0x0000,0x0000,0x00,0x00,0x0000, cmdData)
-        mainWindow.udpSocketClient.receiveData() # Do nothing
+        self.udpSocketClient.receiveData() # Do nothing
         
     def readCmdSampleRate(self): 
         global gSocketBodySize
@@ -445,7 +563,7 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         # Len is not cared
         self.sendcommand(0x5a0a,0x0000,0x5a0a,0x0004,0x0000,0x0000,0x00,0x00,0x0000, None )
         data = self.udpSocketClient.receiveData()
-        value = int(struct.unpack('L',data[16:20])[0])
+        value = ntohl(int(struct.unpack('L',data[16:20])[0]))
         return value
         
     def sendCmdRecordLength(self,  length): 
@@ -472,7 +590,7 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         global gSocketBodySize
         gSocketBodySize =  length*1024
         self.udpSocketClient.setBufSize(gSocketBodySize + gSocketHeaderSize)
-        mainWindow.udpSocketClient.receiveData()
+        self.udpSocketClient.receiveData()
     
     def sendCmdFramNum(self,  frameNum):
         if (frameNum <= 2**16-1):
@@ -505,9 +623,7 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self.udpSocketClient.setBufSize(gSocketBodySize + gSocketHeaderSize)
         cmdData  =  struct.pack('L', htonl(regAddress)) +  struct.pack('L', htonl(regValue))
         self.sendcommand(0x5a01,0x0000,0x5a01,0x0008,0x0000,0x0000,0x00,0x00,0x0000, cmdData)
-    
-    
-    
+
     def getTriggerType(self):
         index = self.comboBox_TriggerDomain.currentIndex()
         return int(index)
@@ -518,7 +634,10 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         
     def getRecordLength(self):
         index = self.comboBox_RecordLength.currentIndex()
-        return 2**index
+        if (index == 18):
+            return 40
+        else:
+            return 2**index
         
     def getVoltageScale(self):
         volScale = 200
@@ -556,37 +675,39 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
             self.realTimeThread.stop()
         if self.externalTriggerThread != None:
             self.externalTriggerThread.stop()
-            
+
         self.pushButton_Start_TimeDomain.setEnabled(True)
         self.pushButton_Stop_TimeDomain.setEnabled(False)
         self.pushButton_Save_TimeDomain.setEnabled(True)
         self.comboBox_RecordLength.setEnabled(True)
+        
+        # Disable them for zhengzhou
         self.comboBox_SampleRate.setEnabled(True)
         self.comboBox_TriggerDomain.setEnabled(True)
+        
+        self.lineEdit_FrameNum.setEnabled(True)
     
     @pyqtSlot()
     def on_pushButton_Start_TimeDomain_clicked(self):
         """
         Slot documentation goes here.
         """
+        # Restart LCD display
+        self.lcdNumber_FrameNum.display(0)
         self.pushButton_Start_TimeDomain.setEnabled(False)
         self.pushButton_Stop_TimeDomain.setEnabled(True)
         self.pushButton_Save_TimeDomain.setEnabled(False)
         self.comboBox_RecordLength.setEnabled(False)
         self.comboBox_SampleRate.setEnabled(False)
         self.comboBox_TriggerDomain.setEnabled(False)
-        
-        # Start to capture...
-        self.sendCmdWRREG(0x2, 0x28)
-        self.sendCmdWRREG(0x2, 0x29)
-        time.sleep(1)
-        
+        self.lineEdit_FrameNum.setEnabled(False)
+                
         if self.getTriggerType() == 0: # Auto Trigger Type
             self.realTimeThread = RealTimeThread(self.axes, self.canvas, self.radioButton_CHA.isChecked(), 1.0,  False)
             self.realTimeThread.setDaemon(True)
             self.realTimeThread.start()
         elif self.getTriggerType() == 1: # External Trigger Type
-            self.externalTriggerThread = ExternalTriggerThread()
+            self.externalTriggerThread = RealTimeThread(self.axes, self.canvas, self.radioButton_CHA.isChecked(), 1.0,  True)
             self.externalTriggerThread.setDaemon(True)
             self.externalTriggerThread.start()  
     
@@ -643,10 +764,17 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
             self.checkBox_FrameMode.setEnabled(True)
             self.label_FrameNum.setEnabled(True)
             self.lineEdit_FrameNum.setEnabled(True)
+            self.label_FrameNum_Current.setEnabled(True)
+            self.lcdNumber_FrameNum.setEnabled(True)
         else:
             self.checkBox_FrameMode.setEnabled(False)
             self.label_FrameNum.setEnabled(False)
             self.lineEdit_FrameNum.setEnabled(False)
+            self.label_FrameNum_Current.setEnabled(False)
+            self.lcdNumber_FrameNum.setEnabled(False)
+            
+        # Restor RecordLength
+        self.sendCmdRecordLength(self.getRecordLength() * self.getFrameNumber())
 
     @pyqtSlot(int)
     def on_comboBox_SampleRate_currentIndexChanged(self, index):
@@ -655,12 +783,29 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         
     @pyqtSlot(int)
     def on_comboBox_RecordLength_currentIndexChanged(self, index):
-        self.sendCmdRecordLength(2**index)
+        if (index == 18): # this is 40k
+            self.sendCmdRecordLength(40*self.getFrameNumber())
+        else:
+            self.sendCmdRecordLength((2**index)*self.getFrameNumber())
   
     @pyqtSlot()
     def on_lineEdit_FrameNum_editingFinished(self):
         self.frameNum = int(self.lineEdit_FrameNum.text())
         self.sendCmdFramNum(self.frameNum);
+        self.sendCmdRecordLength(self.getRecordLength()*self.frameNum)
+        
+    @pyqtSlot(bool)
+    def on_checkBox_FrameMode_clicked(self, checked):
+        """
+        Slot documentation goes here.
+        
+        @param checked DESCRIPTION
+        @type bool
+        """
+        # Set recordLength value to register
+        self.frameNum = self.getFrameNumber()
+        self.sendCmdFramNum(self.frameNum);
+        self.sendCmdRecordLength(self.getRecordLength()*self.frameNum)
 
 if __name__ == "__main__":
     app = QtWidgets.QApplication(sys.argv)
